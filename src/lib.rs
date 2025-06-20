@@ -1,5 +1,4 @@
 use rand::{thread_rng, Rng};
-use std::collections::HashMap;
 
 /// Simple 1-out-of-2 Oblivious Transfer implementation
 /// This is a simplified educational implementation for demonstration purposes.
@@ -92,28 +91,6 @@ impl OTReceiver {
             panic!("No encrypted message received");
         }
     }
-}
-
-/// Simplified OT protocol for garbled circuits with generic key type
-/// This demonstrates the concept but lacks the security of a real OT implementation
-pub fn perform_ot_protocol_with_keys<K: AsRef<[u8]> + Clone>(
-    alice_wires: &[u32],
-    alice_inputs: &HashMap<u32, u8>,
-    keys: &HashMap<u32, (K, K)>,
-) -> HashMap<u32, Vec<u8>> {
-    let mut selected_keys = HashMap::new();
-
-    for &wire_id in alice_wires {
-        if let (Some(&input_bit), Some((key0, key1))) =
-            (alice_inputs.get(&wire_id), keys.get(&wire_id))
-        {
-            // Alice selects the key corresponding to her input
-            let selected_key = if input_bit == 0 { key0 } else { key1 };
-            selected_keys.insert(wire_id, selected_key.as_ref().to_vec());
-        }
-    }
-
-    selected_keys
 }
 
 #[cfg(test)]
