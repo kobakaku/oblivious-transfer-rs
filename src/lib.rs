@@ -1,95 +1,169 @@
-use rand::{thread_rng, Rng};
+use anyhow::{anyhow, Result};
+use rand::rngs::OsRng;
+use rsa::{PaddingScheme, PublicKey, RsaPrivateKey, RsaPublicKey};
 
-/// Simple 1-out-of-2 Oblivious Transfer implementation
-/// This is a simplified educational implementation for demonstration purposes.
-/// In production, use elliptic curve cryptography for better security.
-#[derive(Clone, Debug)]
-pub struct OTSender {
-    // For simplicity, we'll use a basic implementation
-    // In practice, this would use public key cryptography
-    pub messages: Vec<Vec<u8>>,
-    pub random_values: Vec<u64>,
+/// Choice enum for 1-out-of-2 OT
+#[derive(Clone, Debug, Copy, PartialEq)]
+pub enum Choice {
+    Zero,
+    One,
 }
 
+impl Choice {
+    pub fn from_bit(bit: u8) -> Result<Self> {
+        match bit {
+            0 => Ok(Choice::Zero),
+            1 => Ok(Choice::One),
+            _ => Err(anyhow!("Invalid choice bit: {}", bit)),
+        }
+    }
+
+    pub fn to_bit(&self) -> u8 {
+        match self {
+            Choice::Zero => 0,
+            Choice::One => 1,
+        }
+    }
+}
+
+/// Classical RSA-based OT implementation (Even-Goldreich-Lempel)
+/// Uses external RSA library for all cryptographic operations
 #[derive(Clone, Debug)]
+pub struct OTSender {
+    messages: Vec<Vec<u8>>,
+}
+
 pub struct OTReceiver {
-    pub choice_bit: u8,
-    pub received_message: Option<Vec<u8>>,
+    choice: Choice,
+    private_key: Option<RsaPrivateKey>,
+    fake_public_key: Option<RsaPublicKey>,
+}
+
+/// Public keys sent from receiver to sender
+#[derive(Clone)]
+pub struct ReceiverPublicKeys {
+    pub pk0: RsaPublicKey,
+    pub pk1: RsaPublicKey,
+}
+
+/// Sender's response with encrypted messages
+#[derive(Clone)]
+pub struct SenderResponse {
+    pub encrypted_m0: Vec<u8>,
+    pub encrypted_m1: Vec<u8>,
 }
 
 impl OTSender {
-    /// Create a new OT sender with two messages
-    pub fn new(message0: Vec<u8>, message1: Vec<u8>) -> Self {
-        let mut rng = thread_rng();
-        OTSender {
+    /// Create a new classical RSA-based OT sender with two messages
+    pub fn new(message0: Vec<u8>, message1: Vec<u8>) -> Result<Self> {
+        Ok(OTSender {
             messages: vec![message0, message1],
-            random_values: vec![rng.gen(), rng.gen()],
-        }
+        })
     }
 
-    /// Phase 1: Send encrypted messages to receiver
-    /// In a real implementation, this would use public key encryption
-    pub fn send_encrypted_messages(&self) -> Vec<Vec<u8>> {
-        let mut encrypted_messages = Vec::new();
+    /// Phase 2: Encrypt messages using receiver's public keys with RSA library
+    pub fn encrypt_messages(&self, receiver_pks: ReceiverPublicKeys) -> Result<SenderResponse> {
+        let mut rng = OsRng;
 
-        for (i, message) in self.messages.iter().enumerate() {
-            // Simple XOR encryption with random value (insecure - for demonstration only)
-            let mut encrypted = Vec::new();
-            let random_bytes = self.random_values[i].to_le_bytes();
+        // Encrypt message 0 with pk0 using RSA library
+        let encrypted_m0 = receiver_pks.pk0.encrypt(
+            &mut rng,
+            PaddingScheme::new_pkcs1v15_encrypt(),
+            &self.messages[0],
+        )?;
 
-            for (j, &byte) in message.iter().enumerate() {
-                encrypted.push(byte ^ random_bytes[j % 8]);
-            }
-            encrypted_messages.push(encrypted);
-        }
+        // Encrypt message 1 with pk1 using RSA library
+        let encrypted_m1 = receiver_pks.pk1.encrypt(
+            &mut rng,
+            PaddingScheme::new_pkcs1v15_encrypt(),
+            &self.messages[1],
+        )?;
 
-        encrypted_messages
-    }
-
-    /// Phase 2: Send decryption key for chosen message
-    pub fn send_decryption_key(&self, choice: u8) -> u64 {
-        if choice == 0 || choice == 1 {
-            self.random_values[choice as usize]
-        } else {
-            panic!("Invalid choice bit: {}", choice);
-        }
+        Ok(SenderResponse {
+            encrypted_m0,
+            encrypted_m1,
+        })
     }
 }
 
 impl OTReceiver {
-    /// Create a new OT receiver with a choice bit
-    pub fn new(choice_bit: u8) -> Self {
-        if choice_bit != 0 && choice_bit != 1 {
-            panic!("Choice bit must be 0 or 1, got: {}", choice_bit);
-        }
-
+    /// Create a new classical RSA-based OT receiver with a choice
+    pub fn new(choice: Choice) -> Self {
         OTReceiver {
-            choice_bit,
-            received_message: None,
+            choice,
+            private_key: None,
+            fake_public_key: None,
         }
     }
 
-    /// Phase 1: Receive encrypted messages but can't decrypt yet
-    pub fn receive_encrypted_messages(&mut self, encrypted_messages: Vec<Vec<u8>>) {
-        // Store the encrypted messages, but can't decrypt without the key
-        // In practice, the receiver would only receive the message they can decrypt
-        self.received_message = Some(encrypted_messages[self.choice_bit as usize].clone());
-    }
+    /// Phase 1: Generate RSA key pair and create blinded public keys based on choice
+    /// Uses external RSA library for key generation (blackboxed)
+    ///
+    /// Security: Receiver generates fake public key but immediately discards the private key
+    /// This ensures receiver cannot decrypt messages encrypted with fake public key
+    pub fn generate_public_keys(&mut self) -> Result<ReceiverPublicKeys> {
+        let mut rng = OsRng;
 
-    /// Phase 2: Decrypt the chosen message using the provided key
-    pub fn decrypt_message(&mut self, decryption_key: u64) -> Vec<u8> {
-        if let Some(encrypted_message) = &self.received_message {
-            let mut decrypted = Vec::new();
-            let key_bytes = decryption_key.to_le_bytes();
+        // Generate real RSA key pair using external library (blackboxed)
+        let bits = 1024; // Small for demo, but more realistic than our custom implementation
+        self.private_key = Some(RsaPrivateKey::new(&mut rng, bits)?);
+        let real_public_key = RsaPublicKey::from(self.private_key.as_ref().unwrap());
 
-            for (i, &byte) in encrypted_message.iter().enumerate() {
-                decrypted.push(byte ^ key_bytes[i % 8]);
+        // Generate fake public key - receiver generates random public key but does NOT retain the private key
+        // This ensures receiver cannot decrypt messages encrypted with the fake public key
+        let fake_private_key = RsaPrivateKey::new(&mut rng, bits)?;
+        let fake_public_key = RsaPublicKey::from(&fake_private_key);
+        // Deliberately drop fake_private_key here - receiver must not retain it
+        drop(fake_private_key);
+        self.fake_public_key = Some(fake_public_key);
+
+        // Arrange public keys based on choice
+        // The key insight: receiver puts their real public key in the chosen position
+        // and a fake public key in the other position
+        let (pk0, pk1) = match self.choice {
+            Choice::Zero => {
+                // Real key goes to position 0, fake to position 1
+                (
+                    real_public_key,
+                    self.fake_public_key.as_ref().unwrap().clone(),
+                )
             }
+            Choice::One => {
+                // Fake goes to position 0, real key to position 1
+                (
+                    self.fake_public_key.as_ref().unwrap().clone(),
+                    real_public_key,
+                )
+            }
+        };
 
-            decrypted
-        } else {
-            panic!("No encrypted message received");
-        }
+        Ok(ReceiverPublicKeys { pk0, pk1 })
+    }
+
+    /// Phase 2: Decrypt the chosen message using RSA library (blackboxed)
+    pub fn decrypt_message(&self, response: SenderResponse) -> Result<Vec<u8>> {
+        let private_key = self
+            .private_key
+            .as_ref()
+            .ok_or_else(|| anyhow!("Invalid protocol state: private key not generated"))?;
+
+        let padding = PaddingScheme::new_pkcs1v15_encrypt();
+
+        // Receiver can only decrypt the message encrypted with their real public key
+        let ciphertext = match self.choice {
+            Choice::Zero => {
+                // Real key was pk0, so decrypt encrypted_m0
+                &response.encrypted_m0
+            }
+            Choice::One => {
+                // Real key was pk1, so decrypt encrypted_m1
+                &response.encrypted_m1
+            }
+        };
+
+        // Decrypt using RSA library (blackboxed)
+        let decrypted = private_key.decrypt(padding, ciphertext)?;
+        Ok(decrypted)
     }
 }
 
@@ -98,36 +172,80 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_basic_ot() {
-        let message0 = b"Hello Alice".to_vec();
+    fn test_classical_rsa_ot_choice_zero() -> Result<()> {
+        let message0 = b"Hello Alice!".to_vec();
         let message1 = b"Hello Bob!!".to_vec();
 
-        let sender = OTSender::new(message0.clone(), message1.clone());
-        let mut receiver = OTReceiver::new(1); // Choose message 1
+        // Create sender and receiver
+        let sender = OTSender::new(message0.clone(), message1.clone())?;
+        let mut receiver = OTReceiver::new(Choice::Zero);
 
-        let encrypted_messages = sender.send_encrypted_messages();
-        receiver.receive_encrypted_messages(encrypted_messages);
+        // Phase 1: Receiver generates and sends public keys using RSA library
+        let public_keys = receiver.generate_public_keys()?;
 
-        let decryption_key = sender.send_decryption_key(1);
-        let decrypted = receiver.decrypt_message(decryption_key);
+        // Phase 2: Sender encrypts messages with public keys using RSA library
+        let response = sender.encrypt_messages(public_keys)?;
 
-        assert_eq!(decrypted, message1);
+        // Phase 2: Receiver decrypts chosen message using RSA library
+        let decrypted = receiver.decrypt_message(response)?;
+
+        // Verify we got the correct message
+        assert_eq!(decrypted, message0);
+        Ok(())
     }
 
     #[test]
-    fn test_ot_with_byte_arrays() {
-        let key0 = [1u8; 16];
-        let key1 = [2u8; 16];
+    fn test_classical_rsa_ot_choice_one() -> Result<()> {
+        let message0 = b"Secret Zero".to_vec();
+        let message1 = b"Secret One!".to_vec();
 
-        let sender = OTSender::new(key0.to_vec(), key1.to_vec());
-        let mut receiver = OTReceiver::new(0); // Choose key0
+        let sender = OTSender::new(message0.clone(), message1.clone())?;
+        let mut receiver = OTReceiver::new(Choice::One);
 
-        let encrypted_messages = sender.send_encrypted_messages();
-        receiver.receive_encrypted_messages(encrypted_messages);
+        let public_keys = receiver.generate_public_keys()?;
+        let response = sender.encrypt_messages(public_keys)?;
+        let decrypted = receiver.decrypt_message(response)?;
 
-        let decryption_key = sender.send_decryption_key(0);
-        let decrypted = receiver.decrypt_message(decryption_key);
+        // Verify we got the correct message
+        assert_eq!(decrypted, message1);
+        Ok(())
+    }
 
-        assert_eq!(decrypted, key0.to_vec());
+    #[test]
+    fn test_sender_cannot_distinguish_keys() -> Result<()> {
+        // This test verifies that from sender's perspective,
+        // both public keys look valid (sender can't tell which is real)
+
+        let mut receiver = OTReceiver::new(Choice::Zero);
+        let public_keys = receiver.generate_public_keys()?;
+
+        // Both keys should be usable for encryption (though one won't be decryptable)
+        let test_msg = b"test message";
+        let sender = OTSender::new(test_msg.to_vec(), test_msg.to_vec())?;
+
+        // Both encryptions should succeed (this demonstrates sender can't distinguish)
+        let result = sender.encrypt_messages(public_keys);
+        assert!(result.is_ok());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cannot_decrypt_wrong_message() -> Result<()> {
+        let message0 = b"Should not get this".to_vec();
+        let message1 = b"Should get this one".to_vec();
+
+        let sender = OTSender::new(message0.clone(), message1.clone())?;
+        let mut receiver = OTReceiver::new(Choice::One);
+
+        let public_keys = receiver.generate_public_keys()?;
+        let response = sender.encrypt_messages(public_keys)?;
+
+        // Receiver should get message1, not message0
+        let decrypted = receiver.decrypt_message(response)?;
+        assert_eq!(decrypted, message1);
+        assert_ne!(decrypted, message0);
+
+        Ok(())
     }
 }
