@@ -1,26 +1,29 @@
-# Oblivious Transfer Implementation in Rust
+# Secure RSA-based Oblivious Transfer with XOR Masking
 
-This is a simplified implementation of 1-out-of-2 Oblivious Transfer (OT) protocol in Rust, designed for learning and proof-of-concept demonstrations.
+This is an implementation of 1-out-of-2 Oblivious Transfer (OT) protocol in Rust with enhanced security using XOR masking, designed for learning and research purposes.
 
 ## Generation and References
 
 This code was generated with [Claude Code](https://claude.ai/code) 🤖
 
-This implementation is based on standard OT protocols and references:
-- Classical RSA-based OT protocol (Even, Goldreich, and Lempel)
-- Receiver generates RSA key pair and sends blinded public keys
-- Uses proper RSA assumption for security
+This implementation uses a modified RSA-based OT protocol with XOR masking:
+- Sender generates RSA key pair and performs XOR masking
+- Receiver creates encrypted values based on choice
+- Enhanced security compared to classical EGL protocol
 
 ## Features
 
 - **1-out-of-2 Oblivious Transfer**: Sender has two messages, receiver chooses one without revealing which
-- **Classical RSA-OT Protocol**: Uses the original Even-Goldreich-Lempel construction
+- **RSA-based Protocol with XOR Masking**: Enhanced security using XOR operations
+- **Blackboxed XOR Operations**: XOR functions separated into dedicated module
+- **2048-bit RSA Keys**: Improved security with larger key size
 
 ### Current Limitations
 
-- **No OT Extension**: Does not implement Ishai et al.'s OT extension protocol
+- **No OT Extension**: Does not implement OT extension protocols
 - **Single OT Only**: Limited to one 1-out-of-2 transfer per protocol execution
 - **No Batch Operations**: Cannot efficiently perform multiple OTs
+- **PKCS#1 v1.5 Padding**: Uses older padding scheme (not OAEP)
 
 ## Usage
 
@@ -30,20 +33,25 @@ This implementation is based on standard OT protocols and references:
 use oblivious_transfer_rs::{OTSender, OTReceiver, Choice};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create messages (reasonable size for 1024-bit RSA keys)
+    // Create messages
     let message0 = b"Hello Alice!".to_vec();  // Message for choice 0
     let message1 = b"Hello Bob!!".to_vec();   // Message for choice 1
     
     // Setup sender and receiver
-    let sender = OTSender::new(message0, message1)?;
+    let mut sender = OTSender::new(message0, message1)?;
     let mut receiver = OTReceiver::new(Choice::One); // Choose message 1
     
-    // Phase 1: Receiver generates RSA keys using external crate (blackboxed)
-    let public_keys = receiver.generate_public_keys()?;
+    // Phase 1: Sender generates RSA key pair
+    let sender_pk = sender.generate_keys()?;
     
-    // Phase 2: Sender encrypts with external RSA crate, receiver decrypts chosen message
-    let response = sender.encrypt_messages(public_keys)?;
-    let decrypted = receiver.decrypt_message(response)?;
+    // Phase 2: Receiver generates encrypted values (C0, C1)
+    let encrypted_values = receiver.generate_encrypted_values(sender_pk)?;
+    
+    // Phase 3: Sender decrypts and creates masked messages (K0, K1)
+    let masked_messages = sender.create_masked_messages(encrypted_values)?;
+    
+    // Phase 4: Receiver extracts chosen message
+    let decrypted = receiver.extract_message(masked_messages)?;
     
     println!("Received: {:?}", decrypted);
     Ok(())
@@ -60,55 +68,40 @@ cargo test
 cargo test -- --nocapture
 
 # Run specific test
-cargo test test_classical_rsa_ot_choice_zero
+cargo test test_rsa_ot_with_xor_choice_zero
+
+# Test XOR module separately
+cargo test xor::tests
 ```
-
-## Security Properties
-
-### ✅ Security Guarantees
-
-1. **Receiver Privacy**: Sender cannot determine which message the receiver chose
-2. **Sender Privacy**: Receiver can only decrypt one of the two messages
-3. **Fake Key Security**: Receiver generates fake public key but immediately discards the private key
-4. **Cryptographic Randomness**: Uses `OsRng` for secure random number generation from external RSA library
-
-### ⚠️ Learning/Research Limitations
-
-This implementation is **NOT secure for production use** due to:
-
-1. **Moderate RSA Key Size**: Uses 1024-bit keys for demonstration (acceptable for learning, not production)
-2. **Basic RSA Padding**: Uses PKCS#1 v1.5 padding (less secure than OAEP for production)
-4. **Simplified Protocol**: Missing advanced security features like:
-   - Proof of knowledge protocols
-   - Zero-knowledge proofs
-   - Protection against malicious adversaries
-5. **No Network Layer**: Runs locally only
-6. **Limited Error Handling**: Basic error recovery
 
 ## Protocol Details
 
-The implementation uses the classical RSA-based OT protocol (Even-Goldreich-Lempel):
+The implementation uses an enhanced RSA-based OT protocol with XOR masking:
 
-1. **Receiver Setup**: 
-   - Generates real RSA key pair: RsaPrivateKey::new() from external crate
-   - Creates fake public key: Generates random RSA key pair but immediately discards the private key
-   - Receiver retains only the real private key and both public keys
-   - Uses 1024-bit keys from external RSA library (blackboxed)
-   
-2. **Public Key Blinding**:
-   - Choice 0: pk0 = real_public_key, pk1 = fake_public_key
-   - Choice 1: pk0 = fake_public_key, pk1 = real_public_key
-   - Sender cannot distinguish which is the real public key
-   - Receiver cannot decrypt messages encrypted with fake public key (private key was discarded)
-   
-3. **RSA Message Encryption**:
-   - Sender encrypts m0 with pk0.encrypt(), m1 with pk1.encrypt() using external RSA crate
-   - Uses PKCS#1 v1.5 padding scheme from external library
-   
-4. **RSA Message Decryption**:
-   - Receiver uses private key: private_key.decrypt() from external RSA crate
-   - Can only decrypt message encrypted with real public key
-   - Message encrypted with fake key cannot be decrypted (receiver discarded the fake private key)
+### Phase 1: Key Generation
+1. **Sender** generates RSA key pair (pk, sk) using 2048-bit keys
+2. Sender sends public key (pk) to Receiver
+
+### Phase 2: Receiver Preparation
+1. **Receiver** generates random value `x`
+2. Based on choice bit `b`:
+   - If `b=0`: `y0=x`, `y1=random`
+   - If `b=1`: `y0=random`, `y1=x`
+3. Receiver encrypts: `C0 = Enc_pk(y0)`, `C1 = Enc_pk(y1)`
+4. Sends `(C0, C1)` to Sender
+
+### Phase 3: Message Masking
+1. **Sender** decrypts: `decrypted_C0 = Dec_sk(C0)`, `decrypted_C1 = Dec_sk(C1)`
+2. Creates masked messages:
+   - `K0 = decrypted_C0 ⊕ m0`
+   - `K1 = decrypted_C1 ⊕ m1`
+3. Sends `(K0, K1)` to Receiver
+
+### Phase 4: Message Extraction
+1. **Receiver** extracts chosen message:
+   - If `b=0`: `m0 = K0 ⊕ x`
+   - If `b=1`: `m1 = K1 ⊕ x`
+
 
 ## License
 
