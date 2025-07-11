@@ -76,7 +76,7 @@ impl OTSender {
     /// Phase 1: Generate RSA key pair and send public key to receiver
     pub fn generate_keys(&mut self) -> Result<SenderPublicKey> {
         let mut rng = OsRng;
-        let bits = 2048; // Increased for better security
+        let bits = 1024; // Reduced for better performance
 
         self.private_key = Some(RsaPrivateKey::new(&mut rng, bits)?);
         self.public_key = Some(RsaPublicKey::from(self.private_key.as_ref().unwrap()));
